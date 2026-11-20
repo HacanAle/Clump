@@ -1,0 +1,6 @@
+src-tauri/target/
+src-tauri/gen/
+__pycache__/
+# original mascot picture: carries C2PA metadata, only needed to re-run tools/make_mascot.py
+tools/mascot-source.png
+*.log

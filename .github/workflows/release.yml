@@ -1,0 +1,107 @@
+# Builds clump.exe on a clean Windows runner from the tagged commit, writes SHA256SUMS.txt,
+# attests build provenance and publishes the release.
+# Start it by pushing a tag like v1.3.0 (the version in tauri.conf.json must match).
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build again (for example v1.3.0)
+        required: true
+
+permissions:
+  contents: write      # create the release and upload files
+  id-token: write      # sign the build provenance attestation
+  attestations: write  # store it
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Version must match the tag
+        shell: pwsh
+        run: |
+          $v = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ("v$v" -ne $env:TAG) { throw "tauri.conf.json says $v, but the tag is $env:TAG" }
+          "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Unit tests
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: Build
+        working-directory: src-tauri
+        run: cargo build --release
+
+      - name: Collect files and checksums
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist | Out-Null
+          Copy-Item "src-tauri/target/release/clump.exe" "dist/Clump_${env:VERSION}_x64.exe"
+          Push-Location dist
+          Get-ChildItem -Filter *.exe | ForEach-Object {
+            '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
+          } | Set-Content -Path SHA256SUMS.txt -Encoding ascii
+          Get-Content SHA256SUMS.txt
+          Pop-Location
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            dist/*.exe
+            dist/SHA256SUMS.txt
+
+      - name: Release notes
+        shell: pwsh
+        run: |
+          $notes = @"
+          Your Claude limits next to the Windows clock, plus a "hi" at each reset so the next 5-hour window starts right away.
+
+          ### Download
+
+          | File | |
+          |---|---|
+          | **Clump_${env:VERSION}_x64.exe** | The app. One file, no installer. |
+          | SHA256SUMS.txt | SHA-256 checksum. |
+
+          Put the exe somewhere it can stay (for example ``%LOCALAPPDATA%\Programs\Clump\``) and run it. It starts with Windows from that spot.
+
+          Needs Windows 11, 64-bit (Windows 10 is untested), and Claude Code signed in on the same PC. The exe isn't code-signed, so SmartScreen may say "Windows protected your PC": click **More info → Run anyway**.
+
+          **Verify:** ``Get-FileHash <file>`` must match SHA256SUMS.txt, and ``gh attestation verify <file> --repo $env:GITHUB_REPOSITORY`` proves GitHub Actions built it from this tag.
+
+          Not made by or affiliated with Anthropic. Read [Before you install](https://github.com/$env:GITHUB_REPOSITORY#before-you-install) first.
+          "@
+          ($notes -split "`n" | ForEach-Object { $_ -replace '^          ', '' }) -join "`n" | Set-Content -Path notes.md -Encoding utf8
+          Get-Content notes.md
+
+      - name: Publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $files = Get-ChildItem dist | ForEach-Object { $_.FullName }
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:TAG @files --clobber
+          } else {
+            gh release create $env:TAG @files --title "Clump $env:VERSION" --notes-file notes.md --verify-tag
+          }
+          if ($LASTEXITCODE -ne 0) { throw "gh failed with exit code $LASTEXITCODE" }

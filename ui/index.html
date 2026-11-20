@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en" data-theme="peach">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clump</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <main id="root">
+    <div class="shell" id="shell">
+      <section class="view" id="view-home">
+        <header class="hero">
+          <button class="buddy-btn" id="buddy-btn" title="Say hello" aria-label="Mascot">
+            <svg class="buddy" id="buddy" viewBox="0 0 100 100" data-mood="happy" aria-hidden="true">
+              <g class="hop" id="hop">
+                <g class="float">
+                  <image href="mascot.png" x="0" y="0" width="100" height="100" />
+                  <g class="eyes open"><rect x="24.11" y="39.02" width="7.5" height="7.94" /><rect x="70.18" y="39.02" width="7.5" height="7.94" /></g>
+                  <g class="eyes closed"><rect x="24.11" y="44.6" width="7.5" height="2.4" /><rect x="70.18" y="44.6" width="7.5" height="2.4" /></g>
+                  <g class="eyes happy"><path d="M24.1 47 L27.9 40.5 L31.6 47" /><path d="M70.2 47 L73.9 40.5 L77.7 47" /></g>
+                  <g class="eyes panic"><path d="M24.6 39.5 L31.1 43 L24.6 46.5" /><path d="M77.2 39.5 L70.7 43 L77.2 46.5" /></g>
+                </g>
+              </g>
+              <path class="sweat" d="M93 24 Q98.5 32 93 35.5 Q87.5 32 93 24 Z" />
+              <text class="zz z1" x="82" y="4">z</text>
+              <text class="zz z2" x="91" y="-6">z</text>
+              <text class="huh" x="88" y="2">?</text>
+              <g class="sparks">
+                <path class="spark k1" d="M4 8 l2.2 5.3 5.3 2.2 -5.3 2.2 -2.2 5.3 -2.2 -5.3 -5.3 -2.2 5.3 -2.2z" />
+                <path class="spark k2" d="M96 -4 l1.7 4 4 1.7 -4 1.7 -1.7 4 -1.7 -4 -4 -1.7 4 -1.7z" />
+                <path class="spark k3" d="M98 70 l2.2 5.3 5.3 2.2 -5.3 2.2 -2.2 5.3 -2.2 -5.3 -5.3 -2.2 5.3 -2.2z" />
+              </g>
+            </svg>
+          </button>
+          <div class="tools">
+            <button class="round" id="btn-refresh" title="Refresh" aria-label="Refresh"><span class="glyph">&#xE72C;</span></button>
+            <button class="round" id="btn-settings" title="Settings" aria-label="Settings"><span class="glyph">&#xE713;</span></button>
+          </div>
+          <div class="bubble" id="bubble"><p id="say">Hi there!</p></div>
+        </header>
+
+        <div class="stats">
+          <article class="stat" id="st5" data-level="x">
+            <div class="stat-head"><span class="chip">5H</span><span class="stat-name">Session</span></div>
+            <div class="big"><span class="num" id="n5">—</span><span class="pc" id="p5">%</span><span class="unit" id="u5"></span></div>
+            <div class="bar"><i id="b5"></i></div>
+            <div class="reset">
+              <svg class="ri" viewBox="0 0 16 16" aria-hidden="true"><path d="M14 8a6 6 0 1 1-6-6c1.7 0 3.3.7 4.5 1.8L14 5.3" /><path d="M14 2v3.3h-3.3" /></svg>
+              <b id="r5">—</b><span id="i5"></span>
+            </div>
+          </article>
+          <article class="stat" id="st7" data-level="x">
+            <div class="stat-head"><span class="chip">7D</span><span class="stat-name">Weekly</span></div>
+            <div class="big"><span class="num" id="n7">—</span><span class="pc" id="p7">%</span><span class="unit" id="u7"></span></div>
+            <div class="bar"><i id="b7"></i></div>
+            <div class="reset">
+              <svg class="ri" viewBox="0 0 16 16" aria-hidden="true"><path d="M14 8a6 6 0 1 1-6-6c1.7 0 3.3.7 4.5 1.8L14 5.3" /><path d="M14 2v3.3h-3.3" /></svg>
+              <b id="r7">—</b><span id="i7"></span>
+            </div>
+          </article>
+        </div>
+
+        <div class="card auto">
+          <label class="auto-row">
+            <span class="auto-text">
+              <span class="title">Say hi at each reset</span>
+              <span class="sub" id="auto-sub"></span>
+              <span class="cloud-line" id="cloud-line" hidden>
+                <svg class="ci" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.6 12.5h6.9a2.9 2.9 0 0 0 .3-5.8 3.9 3.9 0 0 0-7.5.9 2.5 2.5 0 0 0 .3 4.9z" /></svg>
+                <span id="cloud-text"></span>
+              </span>
+            </span>
+            <span class="switch"><input type="checkbox" id="auto-session"><i></i></span>
+          </label>
+          <div class="auto-foot">
+            <span class="last" id="last"></span>
+            <button class="pill" id="btn-start">Say hi now</button>
+          </div>
+        </div>
+
+        <footer class="foot" id="foot"></footer>
+      </section>
+
+      <section class="view" id="view-settings" hidden>
+        <header class="shead">
+          <button class="round" id="btn-back" title="Back" aria-label="Back"><span class="glyph">&#xE72B;</span></button>
+          <h1>Settings</h1>
+        </header>
+
+        <div class="card list">
+          <div class="setting">
+            <span class="s-label">Taskbar shows</span>
+            <div class="seg" id="seg-show" role="radiogroup" aria-label="Taskbar shows">
+              <button role="radio" data-v="used">% used</button>
+              <button role="radio" data-v="left">% left</button>
+            </div>
+          </div>
+          <label class="setting"><span class="s-label">Mascot in taskbar</span><span class="switch"><input type="checkbox" id="mascot"><i></i></span></label>
+          <label class="setting"><span class="s-label">Reset times in taskbar</span><span class="switch"><input type="checkbox" id="show-resets"><i></i></span></label>
+          <label class="setting"><span class="s-label">Show in taskbar</span><span class="switch"><input type="checkbox" id="show-widget"><i></i></span></label>
+        </div>
+
+        <div class="card list">
+          <div class="setting">
+            <span class="s-label">Colours</span>
+            <div class="swatches" id="themes" role="radiogroup" aria-label="Colours">
+              <button role="radio" data-v="peach" title="Peach"><i></i></button>
+              <button role="radio" data-v="mint" title="Mint"><i></i></button>
+              <button role="radio" data-v="sky" title="Sky"><i></i></button>
+              <button role="radio" data-v="lemon" title="Lemon"><i></i></button>
+              <button role="radio" data-v="night" title="Night"><i></i></button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card list">
+          <label class="setting">
+            <span class="s-text"><span class="s-label">Wake PC from sleep for each reset</span><small>Wakes the PC to say hi, then Windows lets it sleep again.</small></span>
+            <span class="switch"><input type="checkbox" id="wake"><i></i></span>
+          </label>
+          <label class="setting">
+            <span class="s-text"><span class="s-label">Cloud hi when this PC is off</span><small>A Claude Code cloud task (Haiku) says hi after each reset. Whenever Clump says hi itself, it moves the cloud one on.</small></span>
+            <span class="switch"><input type="checkbox" id="cloud"><i></i></span>
+          </label>
+          <label class="setting">
+            <span class="s-text"><span class="s-label">Start with Windows</span><small>Opens at sign-in and says hi if no session is running.</small></span>
+            <span class="switch"><input type="checkbox" id="autostart"><i></i></span>
+          </label>
+        </div>
+
+        <h2 class="group">Recent</h2>
+        <div class="card list" id="recent"></div>
+
+        <div class="about"><span id="about"></span><button class="link" id="btn-quit">Quit Clump</button></div>
+      </section>
+      <div class="burst" id="burst" aria-hidden="true"></div>
+    </div>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
