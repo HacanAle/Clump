@@ -49,6 +49,9 @@ pub fn run(core: Arc<Core>, rx: Receiver<Cmd>, demo: Option<f64>) {
     let mut ping_fails = 0usize;
     let mut wake = WakeTimer::default();
     let mut keep_awake = false;
+    let mut claude_checked = 0i64;
+    // A due hi that couldn't go out for lack of `claude` was already reported.
+    let mut skip_reported = false;
 
     loop {
         let mut force_ping = false;
@@ -78,8 +81,13 @@ pub fn run(core: Arc<Core>, rx: Receiver<Cmd>, demo: Option<f64>) {
             discovered_at = t;
             match source::discover() {
                 Some(found) => {
-                    if src.as_ref().map(|s| s.creds != found.creds).unwrap_or(true) {
-                        journal::line(format!("using Claude Code login: {} ({})", found.label, found.creds.display()));
+                    if src.as_ref().map_or(true, |s| s.creds != found.creds || s.claude != found.claude) {
+                        journal::line(format!(
+                            "using Claude Code login: {} ({}), claude: {}",
+                            found.label,
+                            found.creds.display(),
+                            found.claude.as_deref().unwrap_or("not found")
+                        ));
                     }
                     core.with(|s| s.source = found.label.clone());
                     core.set_source(found.clone());
@@ -89,6 +97,18 @@ pub fn run(core: Arc<Core>, rx: Receiver<Cmd>, demo: Option<f64>) {
                 None => {}
             }
             next_poll = next_poll.min(t);
+        }
+
+        // No `claude` yet (or an extension update took its folder away): look again every minute,
+        // so a CLI installed while Clump runs is used without a restart.
+        if let Some(s) = src.as_mut().filter(|s| !source::claude_usable(s)) {
+            if t - claude_checked >= 60 {
+                claude_checked = t;
+                if source::recheck_claude(s) {
+                    journal::line(format!("claude: {}", s.claude.as_deref().unwrap_or("not found")));
+                    core.set_source(s.clone());
+                }
+            }
         }
 
         if t >= next_poll {
@@ -110,7 +130,27 @@ pub fn run(core: Arc<Core>, rx: Receiver<Cmd>, demo: Option<f64>) {
             }
         }
 
-        let can_ping = src.as_ref().map_or(false, |s| s.claude.is_some());
+        let can_ping = src.as_ref().map_or(false, source::claude_usable);
+        let no_cli = src.is_some() && !can_ping;
+        if snap.no_cli != no_cli {
+            core.with(|s| s.no_cli = no_cli);
+            core.publish();
+        }
+        // A hi is due but there is nothing to send it with: say so once per missed reset
+        // (in the log and in Recent) instead of skipping it silently.
+        if !(snap.settings.auto_session && due && no_cli) {
+            skip_reported = false;
+        } else if !skip_reported {
+            skip_reported = true;
+            let trigger = if snap.session.is_none() { "startup" } else { "reset" };
+            journal::line(format!("hi skipped ({trigger}): {}", ping::NO_CLI));
+            core.with(|s| {
+                s.pings.insert(0, PingRecord { at: t, ok: false, ms: 0, detail: ping::NO_CLI.into(), trigger: trigger.into() });
+                s.pings.truncate(10);
+            });
+            core.save_pings();
+            core.publish();
+        }
         if !(force_ping || (snap.settings.auto_session && due && can_ping && t >= next_auto_ping)) {
             continue;
         }

@@ -35,7 +35,7 @@ All screenshots use `--demo` data.
 - **When you're away:**
   - *Wake PC from sleep for each reset* (off by default) sets a wake timer. The PC wakes, says hi, and Windows lets it sleep again.
   - *Start with Windows* (on by default) says hi at sign-in if no session is running.
-  - *Cloud hi when this PC is off* (off by default) books four Claude Code cloud tasks ("Clump hi 1–4", Haiku, no tools or connectors) after the next four resets, about 20 hours ahead. They run on Anthropic's servers, so they fire even with the PC shut down. Whenever Clump says hi itself, every booking moves forward, so the cloud only fires when the PC couldn't.
+  - *Cloud hi when this PC is off* (off by default) books four Claude Code cloud tasks ("Clump hi 1–4", Haiku, no tools or connectors) after the next four resets, about 20 hours ahead. They run on Anthropic's servers, so they fire even with the PC shut down. Whenever Clump says hi itself, every booking moves forward, so the cloud only fires when the PC couldn't. It needs a Claude Code cloud environment: if you've never opened [claude.ai/code](https://claude.ai/code), open it once and Clump picks it up within a minute.
 
 The limit belongs to your account, not to one app, so the % includes what you use in Claude Code, the Claude desktop app and claude.ai.
 
@@ -45,8 +45,9 @@ The limit belongs to your account, not to one app, so the % includes what you us
 
 | You use | Live % | Auto hi |
 |---|:---:|:---:|
-| Claude Code CLI on Windows or in WSL (official installer) | ✅ | ✅ |
-| Claude Code in VS Code, Cursor, Windsurf or JetBrains | ✅ | only if the `claude` command is installed too |
+| Claude Code CLI on Windows or in WSL (official installer, WinGet or npm) | ✅ | ✅ |
+| Claude Code in VS Code, Cursor or Windsurf | ✅ | ✅ (with the `claude` the extension ships with, if the CLI isn't installed) |
+| Claude Code in JetBrains | ✅ | only if the `claude` command is installed too |
 | Only the Claude desktop app or claude.ai | ❌ | ❌ |
 
 **It uses your own login.** Clump stores no account and sends nothing anywhere except Anthropic. It reads the login Claude Code already saved on your PC (`~/.claude/.credentials.json`), and the hi counts against your own plan.
@@ -64,6 +65,7 @@ Every release has a `SHA256SUMS.txt` and a build attestation: `gh attestation ve
 ## How it works
 
 - **Finding the login:** looks in every WSL distro first, then in your Windows user folder, and uses the login whose token is still valid.
+- **Finding `claude` on Windows:** `~\.local\bin\claude.exe` (official installer), then every folder on PATH as Windows has it now (read from the registry, so a CLI installed while Clump runs is found without a restart), WinGet's `Links` folder, npm's `claude.cmd`, and last the `claude.exe` that the VS Code, Cursor or Windsurf extension ships with. While none is found, Clump looks again every minute and the panel says so; a hi that's due but can't go out is listed in Recent instead of being skipped silently.
 - **Usage:** `GET https://api.anthropic.com/api/oauth/usage`. The endpoint rate-limits hard, so Clump reads it every 3 minutes (every minute while the panel is open) and honors `Retry-After`.
 - **Starting a session:** runs the official CLI with the least it can send:
 
@@ -74,7 +76,7 @@ Every release has a `SHA256SUMS.txt` and a build attestation: `gh attestation ve
   ```
 
   That's about 600 input tokens on Haiku and takes about 3.5 s. Your hooks, MCP servers and settings are not loaded, and nothing is saved to your history.
-- **Cloud backup:** uses the same endpoints as Claude Code's `/schedule` (`/v1/code/triggers`, `/v1/environments`) in your `Default` cloud environment. Each task is a one-time run that switches itself off after it fires, and Clump re-arms it. A booking that's about to fire is never moved. The API can't delete tasks: turn the setting off, then delete them at claude.ai/code/routines.
+- **Cloud backup:** uses the same endpoints as Claude Code's `/schedule` (`/v1/code/triggers`, `/v1/environments`) in your `Default` cloud environment. Each task is a one-time run that switches itself off after it fires, and Clump re-arms it. A booking that's about to fire is never moved. An empty tool list means "the default tools" to the cloud, so Clump names every tool the server stores for the task in `disallowed_tools` (this also fixes tasks made by 1.3.0). The API can't delete tasks: turn the setting off, then delete them at claude.ai/code/routines. If Clump starts without its `cloud.json` (first run, or its data was deleted) and the setting is off, it switches off any "Clump hi" tasks still on, so none keeps firing with nothing moving it.
 - **Expired token:** if Claude Code's token expires (after about 8 h without use), the reset time Clump already knows still triggers the hi, and that also refreshes the token.
 
 ## The Clump Files
@@ -118,7 +120,7 @@ Releases are built by [`.github/workflows/release.yml`](.github/workflows/releas
 
 ## Uninstall
 
-Turn off *Cloud hi when this PC is off* and *Start with Windows* in Settings, then choose *Quit Clump*. Delete the exe, the `%APPDATA%\com.clump.app\` folder and `%LOCALAPPDATA%\com.clump.app\` (the panel's WebView cache). If you used cloud backup, delete the "Clump hi" tasks at claude.ai/code/routines.
+Turn off *Cloud hi when this PC is off* and *Start with Windows* in Settings, then choose *Quit Clump*. Delete the exe, the `%APPDATA%\com.clump.app\` folder and `%LOCALAPPDATA%\com.clump.app\` (the panel's WebView cache). If you used cloud backup, delete the "Clump hi" tasks at claude.ai/code/routines: they stay on if you delete the data without turning the setting off first and never run Clump again.
 
 ## License
 

@@ -169,10 +169,12 @@ function render() {
   $('auto-session').checked = st.auto_session;
   let sub;
   if (!st.auto_session) sub = 'Off. Your next message starts a new session.';
+  else if (s.no_cli) sub = "Can't say hi: install the Claude Code CLI. Clump finds it within a minute.";
   else if (s.pinging) sub = 'Saying hi…';
   else if (active) sub = `Next hi at ${hm(ss.resets_at)}${st.wake_from_sleep ? ' (wakes the PC)' : ''}`;
   else sub = 'Sends hi when the session resets';
   $('auto-sub').textContent = sub;
+  $('auto-sub').classList.toggle('bad', st.auto_session && s.no_cli);
   const cl = $('cloud-line');
   cl.hidden = !(st.auto_session && st.cloud_backup);
   if (!cl.hidden) {

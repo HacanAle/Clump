@@ -6,6 +6,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use windows::core::{w, PCWSTR};
+use windows::Win32::Foundation::ERROR_SUCCESS;
+use windows::Win32::System::Registry::{RegGetValueW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+
 use crate::model::now;
 
 pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -118,18 +122,95 @@ fn probe_windows() -> Option<Source> {
     if !creds.exists() {
         return None;
     }
-    let local = home.join(".local").join("bin").join("claude.exe");
-    let claude = if local.exists() {
-        Some(local)
-    } else {
-        std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join("claude.exe")).find(|f| f.exists()))
-    };
     Some(Source {
         kind: Kind::Windows,
         creds,
-        claude: claude.map(|p| p.to_string_lossy().into_owned()),
+        claude: find_claude_windows(&home).map(|p| p.to_string_lossy().into_owned()),
         label: "Windows".into(),
     })
+}
+
+/// Where `claude` is on Windows, best first: the official installer's spot, then PATH (as Windows
+/// has it now), WinGet's links, npm's wrapper, and last the copy the VS Code extension ships with.
+fn find_claude_windows(home: &Path) -> Option<PathBuf> {
+    let local = home.join(".local").join("bin").join("claude.exe");
+    if local.is_file() {
+        return Some(local);
+    }
+    let mut dirs = path_dirs();
+    dirs.extend(std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Microsoft").join("WinGet").join("Links")));
+    dirs.extend(std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("npm")));
+    // A real exe anywhere beats npm's .cmd wrapper.
+    ["claude.exe", "claude.cmd"]
+        .iter()
+        .find_map(|name| dirs.iter().map(|d| d.join(name)).find(|f| f.is_file()))
+        .or_else(|| editor_claude(home))
+}
+
+/// Folders on PATH as Windows has them now. Clump's own PATH is fixed when it starts, so a
+/// Claude Code installed later (WinGet, npm, ...) would stay invisible until a restart.
+fn path_dirs() -> Vec<PathBuf> {
+    let machine = reg_string(HKEY_LOCAL_MACHINE, w!(r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"), w!("Path"));
+    let user = reg_string(HKEY_CURRENT_USER, w!("Environment"), w!("Path"));
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for list in [machine, user, std::env::var("PATH").ok()].into_iter().flatten() {
+        for d in std::env::split_paths(&list) {
+            if !d.as_os_str().is_empty() && !dirs.contains(&d) {
+                dirs.push(d);
+            }
+        }
+    }
+    dirs
+}
+
+/// A string registry value; `%VARS%` in an expandable one come back expanded.
+fn reg_string(root: HKEY, key: PCWSTR, value: PCWSTR) -> Option<String> {
+    let mut buf = vec![0u16; 32_768];
+    let mut size = (buf.len() * 2) as u32;
+    let r = unsafe { RegGetValueW(root, key, value, RRF_RT_REG_SZ, None, Some(buf.as_mut_ptr() as *mut _), Some(&mut size)) };
+    if r != ERROR_SUCCESS {
+        return None;
+    }
+    let len = (size as usize / 2).min(buf.len());
+    Some(String::from_utf16_lossy(&buf[..len]).trim_end_matches('\0').to_string())
+}
+
+/// The `claude.exe` bundled with the Claude Code extension for VS Code, Cursor or Windsurf. Its
+/// folder changes with every extension update, so the newest copy wins.
+fn editor_claude(home: &Path) -> Option<PathBuf> {
+    [".vscode", ".vscode-insiders", ".cursor", ".windsurf"]
+        .iter()
+        .filter_map(|editor| std::fs::read_dir(home.join(editor).join("extensions")).ok())
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("anthropic.claude-code-"))
+        .map(|e| e.path().join("resources").join("native-binary").join("claude.exe"))
+        .filter(|f| f.is_file())
+        .max_by_key(|f| f.metadata().and_then(|m| m.modified()).ok())
+}
+
+/// Whether `claude` can be started for this login right now.
+pub fn claude_usable(src: &Source) -> bool {
+    match (&src.kind, src.claude.as_deref()) {
+        (_, None) => false,
+        // An extension update deletes the old folder, so check the file is still there.
+        (Kind::Windows, Some(c)) => Path::new(c).is_file(),
+        (Kind::Wsl { .. }, Some(_)) => true,
+    }
+}
+
+/// Look for `claude` again (Windows side only, cheap). True when what was found changed.
+pub fn recheck_claude(src: &mut Source) -> bool {
+    if !matches!(src.kind, Kind::Windows) {
+        return false;
+    }
+    let Some(home) = std::env::var_os("USERPROFILE") else { return false };
+    let found = find_claude_windows(Path::new(&home)).map(|p| p.to_string_lossy().into_owned());
+    if found == src.claude {
+        return false;
+    }
+    src.claude = found;
+    true
 }
 
 /// Pick the login that works best: a live token beats an expired one (Claude Code refreshes it on
@@ -152,4 +233,48 @@ pub fn discover() -> Option<Source> {
         })
         .max_by_key(|(score, _)| *score)
         .map(|(_, s)| s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fake_extension(home: &Path, editor: &str, version: &str) -> PathBuf {
+        let bin = home.join(editor).join("extensions").join(format!("anthropic.claude-code-{version}-win32-x64")).join("resources").join("native-binary");
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = bin.join("claude.exe");
+        std::fs::write(&exe, b"").unwrap();
+        exe
+    }
+
+    #[test]
+    fn finds_the_newest_extension_copy() {
+        let home = std::env::temp_dir().join(format!("clump-test-ext-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        assert_eq!(editor_claude(&home), None);
+        std::fs::create_dir_all(home.join(".vscode").join("extensions").join("anthropic.claude-code-2.1.1-win32-x64")).unwrap();
+        assert_eq!(editor_claude(&home), None, "a folder without the exe doesn't count");
+        let old = fake_extension(&home, ".vscode", "2.1.300");
+        let new = fake_extension(&home, ".cursor", "2.1.330");
+        let hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+        std::fs::File::options().write(true).open(&old).unwrap().set_modified(hour_ago).unwrap();
+        assert_eq!(editor_claude(&home), Some(new));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_deleted_windows_claude_is_not_usable() {
+        let src = |claude: Option<&str>| Source { kind: Kind::Windows, creds: PathBuf::new(), claude: claude.map(str::to_string), label: String::new() };
+        assert!(!claude_usable(&src(None)));
+        assert!(!claude_usable(&src(Some(r"C:\nowhere\claude.exe"))));
+        let exe = std::env::current_exe().unwrap();
+        assert!(claude_usable(&src(Some(exe.to_str().unwrap()))));
+    }
+
+    #[test]
+    fn reads_the_live_path_from_the_registry() {
+        let machine = reg_string(HKEY_LOCAL_MACHINE, w!(r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"), w!("Path")).unwrap();
+        assert!(!machine.to_ascii_lowercase().contains("%systemroot%"), "expandable value must come back expanded: {machine}");
+        assert!(path_dirs().iter().any(|d| d.to_string_lossy().to_ascii_lowercase().ends_with(r"\system32")));
+    }
 }

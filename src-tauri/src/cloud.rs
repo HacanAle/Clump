@@ -30,6 +30,16 @@ const HOP_SLACK: i64 = 15 * 60;
 /// Bookings within this of the plan are left alone (estimated vs. confirmed reset times differ a little).
 const TOLERANCE: i64 = 90;
 const RETRY: [i64; 5] = [60, 120, 300, 600, 900];
+/// Shown until the account has a cloud environment (claude.ai/code makes one on the first visit).
+/// Checked every minute meanwhile, so the backup starts soon after.
+const NO_ENV: &str = "no cloud environment yet. Open claude.ai/code once to make one";
+/// The built-in tools a cloud task gets by default (Nov 2026). An empty `allowed_tools` means "the
+/// default set", and a cloud session only leaves a tool out when `disallowed_tools` names it.
+/// `lock_tools` goes by the list the server stores with the task; this is only the fallback.
+const NO_TOOLS: [&str; 19] = [
+    "Task", "Bash", "Glob", "Grep", "Read", "Edit", "MultiEdit", "Write", "NotebookEdit", "WebFetch", "TodoWrite",
+    "WebSearch", "BashOutput", "KillBash", "Skill", "Tmux", "Monitor", "SendUserFile", "REPL",
+];
 
 /// When each cloud hi should run for a session that resets at `reset`.
 pub fn plan(reset: i64) -> [i64; HOPS] {
@@ -66,6 +76,10 @@ struct Auth {
 
 pub fn run(core: Arc<Core>) {
     let path = core.dir.join("cloud.json");
+    // No cloud.json: this PC has no record of the tasks (first run, or Clump's data was deleted).
+    // Tasks left on from before would keep firing with nothing moving them, so unless the backup
+    // is on (then `verify` takes them over by name), switch them off once.
+    let mut sweep = !path.exists();
     let mut st: State = load_json(&path);
     let (mut next_try, mut fails, mut next_check) = (0i64, 0usize, 0i64);
     loop {
@@ -74,13 +88,14 @@ pub fn run(core: Arc<Core>) {
         let s = core.snapshot();
         // Signed out: keep whatever is booked; the login check below just waits.
         let on = s.settings.cloud_backup && s.settings.auto_session;
+        sweep &= !on;
         let want = s.session.and_then(|l| l.resets_at).map(plan);
         // Never move a booking that is about to fire: if the reset passed and this PC hasn't said
         // hi yet, the cloud is the backup.
         let book = on && want.map_or(false, |w| w[0] >= t + 60 && !(st.enabled && same(&st.booked, &w)));
         let disable = !on && st.enabled;
         let check = on && t >= next_check;
-        if t < next_try || !(book || disable || check) {
+        if t < next_try || !(book || disable || check || sweep) {
             let next = (on && st.enabled).then(|| st.booked.iter().copied().find(|&b| b > t - 60)).flatten();
             if s.cloud_next != next {
                 core.with(|x| x.cloud_next = next);
@@ -93,6 +108,10 @@ pub fn run(core: Arc<Core>) {
             continue;
         };
         let result = (|| -> Result<(), String> {
+            if sweep {
+                switch_off_leftovers(&auth, &mut st)?;
+                return Ok(());
+            }
             if check || st.env.is_empty() || st.tasks.len() < HOPS {
                 verify(&core, &auth, &mut st)?;
                 next_check = t + 1800;
@@ -121,10 +140,11 @@ pub fn run(core: Arc<Core>) {
             Ok(()) => {
                 fails = 0;
                 next_try = 0;
+                sweep = false;
                 String::new()
             }
             Err(e) => {
-                next_try = t + RETRY[fails.min(RETRY.len() - 1)];
+                next_try = t + if e == NO_ENV { 60 } else { RETRY[fails.min(RETRY.len() - 1)] };
                 fails += 1;
                 journal::line(format!("cloud backup: {e}"));
                 // A half-applied booking must be redone.
@@ -163,7 +183,7 @@ fn verify(core: &Core, auth: &Auth, st: &mut State) -> Result<(), String> {
         let envs = get(auth, "/v1/environments", BETA_ENVS)?;
         let list = envs["data"].as_array().cloned().unwrap_or_default();
         let cloud: Vec<&Value> = list.iter().filter(|e| e["config"]["type"] == "anthropic_cloud" && e["state"] == "active").collect();
-        let env = cloud.iter().find(|e| e["name"] == "Default").or(cloud.first()).ok_or("no cloud environment on claude.ai yet")?;
+        let env = cloud.iter().find(|e| e["name"] == "Default").or(cloud.first()).ok_or(NO_ENV)?;
         st.env = env["id"].as_str().unwrap_or_default().to_string();
     }
     let list = get(auth, "/v1/code/triggers", BETA_TRIGGERS)?;
@@ -195,6 +215,8 @@ fn verify(core: &Core, auth: &Auth, st: &mut State) -> Result<(), String> {
                     journal::line(format!("cloud hi ran at {} ({})", crate::scheduler::fmt_local(a), if ok { "ok" } else { "failed" }));
                     seen = fire;
                 }
+                // Also fixes tasks made by Clump 1.3.0, which still have every default tool.
+                lock_tools(auth, x);
                 let booked_at = st.booked.get(k).copied();
                 let next = x["next_run_at"].as_str().map(ts);
                 if x["enabled"] != true || booked_at.zip(next).map_or(true, |(b, n)| (b - n).abs() > TOLERANCE) {
@@ -233,7 +255,8 @@ fn create(auth: &Auth, env: &str, name: &str) -> Result<String, String> {
         "clear_mcp_connections": true,
         "job_config": { "ccr": {
             "environment_id": env,
-            "session_context": { "model": MODEL, "allowed_tools": [], "sources": [] },
+            // Tools are switched off right after, from the list the server stores (`lock_tools`).
+            "session_context": { "model": MODEL, "sources": [] },
             "events": [{ "data": {
                 "uuid": uuid4(), "session_id": "", "type": "user", "parent_tool_use_id": null,
                 "message": { "content": "hi", "role": "user" }
@@ -241,9 +264,82 @@ fn create(auth: &Auth, env: &str, name: &str) -> Result<String, String> {
         }}
     });
     let v = post(auth, "/v1/code/triggers", &body)?;
-    let id = v["trigger"]["id"].as_str().or(v["id"].as_str()).ok_or("claude.ai did not return the new task")?.to_string();
+    let task = if v["trigger"].is_object() { &v["trigger"] } else { &v };
+    let id = task["id"].as_str().ok_or("claude.ai did not return the new task")?.to_string();
     journal::line(format!("cloud task created: {name}"));
+    lock_tools(auth, task);
     Ok(id)
+}
+
+/// The tools a task can still use: what its stored `allowed_tools` lists (the server writes the
+/// full default set there; `NO_TOOLS` if it lists none) minus its `disallowed_tools`.
+fn tools_left(task: &Value) -> Vec<String> {
+    let ctx = &task["job_config"]["ccr"]["session_context"];
+    let names = |v: &Value| v.as_array().map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>()).unwrap_or_default();
+    let denied = names(&ctx["disallowed_tools"]);
+    let mut allowed: Vec<String> = names(&ctx["allowed_tools"]).into_iter().filter(|t| !t.starts_with("preset:")).collect();
+    if allowed.is_empty() {
+        allowed = NO_TOOLS.map(str::to_string).to_vec();
+    }
+    let mut left: Vec<String> = Vec::new();
+    for tool in allowed {
+        if !tool.starts_with("preset:") && !denied.contains(&tool) && !left.contains(&tool) {
+            left.push(tool);
+        }
+    }
+    left
+}
+
+/// Make sure a task can't use any tool, including tools added to the default set after this
+/// version of Clump. Sends the task's own job config back with the missing names disallowed.
+/// A failure is logged and tried again at the next check; it never holds up the booking.
+fn lock_tools(auth: &Auth, task: &Value) {
+    let left = tools_left(task);
+    let mut ccr = task["job_config"]["ccr"].clone();
+    if left.is_empty() || !ccr["session_context"].is_object() {
+        return;
+    }
+    let ctx = &mut ccr["session_context"];
+    let mut denied = ctx["disallowed_tools"].as_array().cloned().unwrap_or_default();
+    denied.extend(left.into_iter().map(Value::from));
+    ctx["disallowed_tools"] = Value::Array(denied);
+    if let Some(c) = ctx.as_object_mut() {
+        // The server's expanded default list; leaving it out lets the server work it out again.
+        c.remove("allowed_tools");
+    }
+    let id = task["id"].as_str().unwrap_or_default();
+    let name = task["name"].as_str().unwrap_or(id);
+    match post(auth, &format!("/v1/code/triggers/{id}"), &json!({ "job_config": { "ccr": ccr } })) {
+        Ok(_) => journal::line(format!("cloud task {name}: tools switched off")),
+        Err(e) => journal::line(format!("cloud task {name}: could not switch tools off: {e}")),
+    }
+}
+
+/// Switch off every "Clump hi" task still on at claude.ai and remember them, so a later
+/// `verify` takes them over instead of making new ones.
+fn switch_off_leftovers(auth: &Auth, st: &mut State) -> Result<(), String> {
+    let list = get(auth, "/v1/code/triggers", BETA_TRIGGERS)?;
+    let triggers = list["data"].as_array().cloned().unwrap_or_default();
+    let mut tasks = Vec::with_capacity(HOPS);
+    for k in 0..HOPS {
+        let name = format!("{NAME} {}", k + 1);
+        // Keep slot k for hop k even when a task is missing: `verify` matches by position.
+        let Some(x) = triggers.iter().find(|x| x["name"] == name.as_str()) else {
+            tasks.push(Task::default());
+            continue;
+        };
+        let id = x["id"].as_str().unwrap_or_default().to_string();
+        if x["enabled"] == true {
+            post(auth, &format!("/v1/code/triggers/{id}"), &json!({ "enabled": false }))?;
+            journal::line(format!("cloud task left on from before switched off: {name}"));
+        }
+        // Earlier runs are old news; don't list them in Recent.
+        tasks.push(Task { id, seen_fire: x["last_run"]["fired_at"].as_str().unwrap_or_default().to_string() });
+    }
+    st.tasks = tasks;
+    st.enabled = false;
+    st.booked.clear();
+    Ok(())
 }
 
 fn get(auth: &Auth, path: &str, beta: &str) -> Result<Value, String> {
@@ -324,6 +420,36 @@ mod tests {
         assert!(same(&p.map(|x| x + 60), &p));
         assert!(!same(&p.map(|x| x + 600), &p));
         assert!(!same(&p[..2], &p));
+    }
+
+    fn task(allowed: Value, disallowed: Value) -> Value {
+        json!({ "id": "trig_1", "job_config": { "ccr": { "session_context": {
+            "allowed_tools": allowed, "disallowed_tools": disallowed, "model": MODEL
+        }}}})
+    }
+
+    #[test]
+    fn a_task_made_by_1_3_0_still_has_every_default_tool() {
+        // What claude.ai stored for `"allowed_tools": []` (Nov 2026).
+        let stored = json!(["preset:default", "Task", "Bash", "Glob", "Grep", "Read", "Edit", "MultiEdit", "Write",
+            "NotebookEdit", "WebFetch", "TodoWrite", "WebSearch", "BashOutput", "KillBash", "Skill", "Tmux", "Monitor",
+            "SendUserFile", "REPL"]);
+        let left = tools_left(&task(stored.clone(), Value::Null));
+        assert_eq!(left.len(), 19, "every tool but the preset marker");
+        assert!(!left.iter().any(|t| t.starts_with("preset:")));
+        assert!(tools_left(&task(stored, json!(NO_TOOLS))).is_empty(), "locked once, nothing left to do");
+    }
+
+    #[test]
+    fn tools_added_by_the_server_later_are_locked_too() {
+        let left = tools_left(&task(json!(["preset:default", "Bash", "NewTool"]), json!(NO_TOOLS)));
+        assert_eq!(left, vec!["NewTool".to_string()]);
+    }
+
+    #[test]
+    fn no_stored_list_falls_back_to_the_known_tools() {
+        assert_eq!(tools_left(&task(Value::Null, Value::Null)).len(), NO_TOOLS.len());
+        assert!(tools_left(&task(json!([]), json!(NO_TOOLS))).is_empty());
     }
 
     #[test]

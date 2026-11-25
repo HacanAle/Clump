@@ -8,9 +8,10 @@ use crate::source::{run_hidden, Kind, Source};
 
 const PROMPT: &str = "hi";
 const SYSTEM: &str = "Reply with one short word.";
+pub const NO_CLI: &str = "The claude command was not found. Install the Claude Code CLI.";
 
 pub fn send_hi(src: &Source) -> Result<(u64, String), String> {
-    let claude = src.claude.as_deref().ok_or("Claude Code (claude) was not found")?;
+    let claude = src.claude.as_deref().ok_or(NO_CLI)?;
     let cmd = match &src.kind {
         Kind::Wsl { distro, user } => {
             let script = format!(

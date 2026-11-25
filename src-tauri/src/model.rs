@@ -24,7 +24,7 @@ pub struct PingRecord {
     pub ok: bool,
     pub ms: u64,
     pub detail: String,
-    /// "reset", "startup" or "manual".
+    /// "reset", "startup", "manual" or "cloud".
     pub trigger: String,
 }
 
@@ -90,6 +90,8 @@ pub struct Snapshot {
     pub plan: String,
     pub source: String,
     pub pinging: bool,
+    /// A login was found but no `claude` to say hi with.
+    pub no_cli: bool,
     pub pings: Vec<PingRecord>,
     pub settings: Settings,
     pub autostart: bool,
